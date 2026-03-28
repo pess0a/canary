@@ -1,6 +1,6 @@
 /**
  * Canary - A free and open-source MMORPG server emulator
- * Copyright (©) 2019–present OpenTibiaBR <opentibiabr@outlook.com>
+ * Copyright (©) 2019-2024 OpenTibiaBR <opentibiabr@outlook.com>
  * Repository: https://github.com/opentibiabr/canary
  * License: https://github.com/opentibiabr/canary/blob/main/LICENSE
  * Contributors: https://github.com/opentibiabr/canary/graphs/contributors
@@ -42,6 +42,7 @@
 #include "items/containers/rewards/rewardchest.hpp"
 #include "items/items.hpp"
 #include "items/items_classification.hpp"
+#include "lua/callbacks/event_callback.hpp"
 #include "lua/callbacks/events_callbacks.hpp"
 #include "lua/creature/actions.hpp"
 #include "lua/creature/creatureevent.hpp"
@@ -204,14 +205,13 @@ namespace InternalGame {
 } // Namespace InternalGame
 
 Game::Game() {
-	[[maybe_unused]] auto &[choices1_text, choices1_value] = offlineTrainingWindow.choices.emplace_back("Fist Fighting and Shielding", SKILL_FIST);
-	[[maybe_unused]] auto &[choices2_text, choices2_value] = offlineTrainingWindow.choices.emplace_back("Sword Fighting and Shielding", SKILL_SWORD);
-	[[maybe_unused]] auto &[choices3_text, choices3_value] = offlineTrainingWindow.choices.emplace_back("Axe Fighting and Shielding", SKILL_AXE);
-	[[maybe_unused]] auto &[choices4_text, choices4_value] = offlineTrainingWindow.choices.emplace_back("Club Fighting and Shielding", SKILL_CLUB);
-	[[maybe_unused]] auto &[choices5_text, choices5_value] = offlineTrainingWindow.choices.emplace_back("Distance Fighting and Shielding", SKILL_DISTANCE);
-	[[maybe_unused]] auto &[choices6_text, choices6_value] = offlineTrainingWindow.choices.emplace_back("Magic Level and Shielding", SKILL_MAGLEVEL);
-	[[maybe_unused]] auto &[button1_text, button1_value] = offlineTrainingWindow.buttons.emplace_back("Okay", 1);
-	[[maybe_unused]] auto &[button2_text, button2_value] = offlineTrainingWindow.buttons.emplace_back("Cancel", 0);
+	offlineTrainingWindow.choices.emplace_back("Sword Fighting and Shielding", SKILL_SWORD);
+	offlineTrainingWindow.choices.emplace_back("Axe Fighting and Shielding", SKILL_AXE);
+	offlineTrainingWindow.choices.emplace_back("Club Fighting and Shielding", SKILL_CLUB);
+	offlineTrainingWindow.choices.emplace_back("Distance Fighting and Shielding", SKILL_DISTANCE);
+	offlineTrainingWindow.choices.emplace_back("Magic Level and Shielding", SKILL_MAGLEVEL);
+	offlineTrainingWindow.buttons.emplace_back("Okay", 1);
+	offlineTrainingWindow.buttons.emplace_back("Cancel", 0);
 	offlineTrainingWindow.defaultEscapeButton = 1;
 	offlineTrainingWindow.defaultEnterButton = 0;
 	offlineTrainingWindow.priority = true;
@@ -475,9 +475,35 @@ void Game::loadBoostedCreature() {
 	MonsterRace selectedMonster;
 	if (!monsterlist.empty()) {
 		std::vector<MonsterRace> m_monsters;
-		for (const auto &[raceId, _name] : BestiaryList) {
-			if (raceId != oldRace) {
-				m_monsters.emplace_back(raceId, _name);
+
+		const auto customListStr = g_configManager().getString(BOOSTED_CREATURE_LIST);
+		if (!customListStr.empty()) {
+			// Use only the names defined in boostedCreatureList
+			const auto customNames = split(customListStr, ',');
+			for (const auto &[raceId, _name] : BestiaryList) {
+				if (raceId == oldRace) {
+					continue;
+				}
+				for (const auto &customName : customNames) {
+					if (strcasecmp(_name.c_str(), customName.c_str()) == 0) {
+						m_monsters.emplace_back(raceId, _name);
+						break;
+					}
+				}
+			}
+			if (m_monsters.empty()) {
+				g_logger().warn("[Game::loadBoostedCreature] - boostedCreatureList is set but no matching bestiary entries were found. Falling back to full list.");
+				for (const auto &[raceId, _name] : BestiaryList) {
+					if (raceId != oldRace) {
+						m_monsters.emplace_back(raceId, _name);
+					}
+				}
+			}
+		} else {
+			for (const auto &[raceId, _name] : BestiaryList) {
+				if (raceId != oldRace) {
+					m_monsters.emplace_back(raceId, _name);
+				}
 			}
 		}
 
@@ -534,22 +560,25 @@ void Game::start(ServiceManager* manager) {
 	int minutes = tms->tm_min;
 	lightHour = (minutes * LIGHT_DAY_LENGTH) / 60;
 
-	[[maybe_unused]] auto eventId1 = g_dispatcher().scheduleEvent(
+	g_dispatcher().scheduleEvent(
 		EVENT_MS + 1000, [this] { createFiendishMonsters(); }, "Game::createFiendishMonsters"
 	);
-	[[maybe_unused]] auto eventId2 = g_dispatcher().scheduleEvent(
+	g_dispatcher().scheduleEvent(
 		EVENT_MS + 1000, [this] { createInfluencedMonsters(); }, "Game::createInfluencedMonsters"
 	);
-	[[maybe_unused]] auto eventId3 = g_dispatcher().cycleEvent(
+	g_dispatcher().cycleEvent(
 		EVENT_MS, [this] { updateForgeableMonsters(); }, "Game::updateForgeableMonsters"
 	);
-	[[maybe_unused]] auto eventId4 = g_dispatcher().cycleEvent(
+	g_dispatcher().cycleEvent(
 		EVENT_LIGHTINTERVAL_MS, [this] { checkLight(); }, "Game::checkLight"
 	);
-	[[maybe_unused]] auto eventId5 = g_dispatcher().cycleEvent(
+	g_dispatcher().cycleEvent(
 		EVENT_CHECK_CREATURE_INTERVAL, [this] { checkCreatures(); }, "Game::checkCreatures"
 	);
-	[[maybe_unused]] auto eventId6 = g_dispatcher().cycleEvent(
+	g_dispatcher().cycleEvent(
+		EVENT_IMBUEMENT_INTERVAL, [this] { checkImbuements(); }, "Game::checkImbuements"
+	);
+	g_dispatcher().cycleEvent(
 		EVENT_LUA_GARBAGE_COLLECTION, [this] { g_luaEnvironment().collectGarbage(); }, "Calling GC"
 	);
 	auto marketItemsPriceIntervalMinutes = g_configManager().getNumber(MARKET_REFRESH_PRICES);
@@ -558,12 +587,12 @@ void Game::start(ServiceManager* manager) {
 		if (marketItemsPriceIntervalMS < 60000) {
 			marketItemsPriceIntervalMS = 60000;
 		}
-		[[maybe_unused]] auto eventId7 = g_dispatcher().cycleEvent(
+		g_dispatcher().cycleEvent(
 			marketItemsPriceIntervalMS, [this] { loadItemsPrice(); }, "Game::loadItemsPrice"
 		);
 	}
 
-	[[maybe_unused]] auto eventId8 = g_dispatcher().cycleEvent(
+	g_dispatcher().cycleEvent(
 		UPDATE_PLAYERS_ONLINE_DB, [this] { updatePlayersOnline(); }, "Game::updatePlayersOnline"
 	);
 }
@@ -1529,7 +1558,7 @@ void Game::playerMoveCreature(const std::shared_ptr<Player> &player, const std::
 			return;
 		}
 
-		if (!g_callbacks().checkCallback(EventCallback_t::playerOnMoveCreature, player, movingCreature, movingCreaturePos, toPos)) {
+		if (!g_callbacks().checkCallback(EventCallback_t::playerOnMoveCreature, &EventCallback::playerOnMoveCreature, player, movingCreature, movingCreaturePos, toPos)) {
 			return;
 		}
 
@@ -1854,7 +1883,7 @@ void Game::playerMoveItem(const std::shared_ptr<Player> &player, const Position 
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::playerOnMoveItem, player, item, count, fromPos, toPos, fromCylinder, toCylinder)) {
+	if (!g_callbacks().checkCallback(EventCallback_t::playerOnMoveItem, &EventCallback::playerOnMoveItem, player, item, count, fromPos, toPos, fromCylinder, toCylinder)) {
 		return;
 	}
 
@@ -1906,7 +1935,7 @@ void Game::playerMoveItem(const std::shared_ptr<Player> &player, const Position 
 	item->checkDecayMapItemOnMove();
 
 	g_events().eventPlayerOnItemMoved(player, item, count, fromPos, toPos, fromCylinder, toCylinder);
-	g_callbacks().executeCallback(EventCallback_t::playerOnItemMoved, player, item, count, fromPos, toPos, fromCylinder, toCylinder);
+	g_callbacks().executeCallback(EventCallback_t::playerOnItemMoved, &EventCallback::playerOnItemMoved, player, item, count, fromPos, toPos, fromCylinder, toCylinder);
 }
 
 bool Game::isTryingToStow(const Position &toPos, const std::shared_ptr<Cylinder> &toCylinder) const {
@@ -3304,9 +3333,6 @@ ObjectCategory_t Game::getObjectCategory(const ItemType &it) {
 	ObjectCategory_t category = OBJECTCATEGORY_DEFAULT;
 	if (it.weaponType != WEAPON_NONE) {
 		switch (it.weaponType) {
-			case WEAPON_FIST:
-				category = OBJECTCATEGORY_FISTWEAPONS;
-				break;
 			case WEAPON_SWORD:
 				category = OBJECTCATEGORY_SWORDS;
 				break;
@@ -3367,93 +3393,27 @@ ObjectCategory_t Game::getObjectCategory(const ItemType &it) {
 
 uint64_t Game::getItemMarketPrice(const std::map<uint16_t, uint64_t> &itemMap, bool buyPrice) const {
 	uint64_t total = 0;
-	g_logger().debug("[{}] - Starting calculation with {} items, buyPrice: {}", __FUNCTION__, itemMap.size(), buyPrice);
-
-	for (const auto &[itemId, count] : itemMap) {
-		uint64_t itemValue = 0;
-		if (itemId == ITEM_GOLD_COIN) {
-			itemValue = count;
-			total += itemValue;
-			g_logger().debug("[{}] - Item {} (GOLD_COIN), count {}, unit 1, total {}", __FUNCTION__, itemId, count, itemValue);
-			continue;
-		}
-
-		if (itemId == ITEM_PLATINUM_COIN) {
-			itemValue = 100 * count;
-			total += itemValue;
-			g_logger().debug("[{}] - Item {} (PLATINUM_COIN), count {}, unit 100, total {}", __FUNCTION__, itemId, count, itemValue);
-			continue;
-		}
-
-		if (itemId == ITEM_CRYSTAL_COIN) {
-			itemValue = 10000 * count;
-			total += itemValue;
-			g_logger().debug("[{}] - Item {} (CRYSTAL_COIN), count {}, unit 10000, total {}", __FUNCTION__, itemId, count, itemValue);
-			continue;
-		}
-
-		const auto marketIt = itemsPriceMap.find(itemId);
-		if (marketIt != itemsPriceMap.end()) {
-			const auto &tierMap = marketIt->second;
-			const auto tierIt = tierMap.find(0);
-			if (tierIt != tierMap.end()) {
-				const uint64_t price = tierIt->second;
-				itemValue = price * count;
-				total += itemValue;
-				g_logger().debug("[{}] - Item {}, count {}, tier {}, MARKET_PRICE {}, total {}", __FUNCTION__, itemId, count, tierIt->first, price, itemValue);
-				continue;
+	for (const auto &it : itemMap) {
+		if (it.first == ITEM_GOLD_COIN) {
+			total += it.second;
+		} else if (it.first == ITEM_PLATINUM_COIN) {
+			total += 100 * it.second;
+		} else if (it.first == ITEM_CRYSTAL_COIN) {
+			total += 10000 * it.second;
+		} else {
+			auto marketIt = itemsPriceMap.find(it.first);
+			if (marketIt != itemsPriceMap.end()) {
+				for (auto &[tier, price] : (*marketIt).second) {
+					total += price * it.second;
+				}
+			} else {
+				const ItemType &iType = Item::items[it.first];
+				total += (buyPrice ? iType.buyPrice : iType.sellPrice) * it.second;
 			}
 		}
-
-		const ItemType &iType = Item::items[itemId];
-		const uint64_t npcPrice = buyPrice ? iType.buyPrice : iType.sellPrice;
-		itemValue = npcPrice * count;
-		total += itemValue;
-		g_logger().debug("[{}] - Item {}, count {}, NPC_PRICE({}), unit {}, total {}", __FUNCTION__, itemId, count, buyPrice ? "buy" : "sell", npcPrice, itemValue);
 	}
 
-	g_logger().debug("[{}] - Final total: {}", __FUNCTION__, total);
 	return total;
-}
-
-uint64_t Game::getItemMarketAveragePrice(uint16_t itemId, uint8_t tier) const {
-	if (itemId == ITEM_GOLD_COIN) {
-		return 1;
-	}
-	if (itemId == ITEM_PLATINUM_COIN) {
-		return 100;
-	}
-	if (itemId == ITEM_CRYSTAL_COIN) {
-		return 10000;
-	}
-
-	const auto &market = IOMarket::getInstance();
-	const auto snapshot = market.getStatistics(itemId, tier);
-
-	uint64_t purchaseAverage = 0;
-	uint64_t saleAverage = 0;
-	bool hasPurchaseData = false;
-	bool hasSaleData = false;
-
-	if (snapshot.purchase && snapshot.purchase->numTransactions > 0) {
-		purchaseAverage = snapshot.purchase->totalPrice / snapshot.purchase->numTransactions;
-		hasPurchaseData = true;
-	}
-
-	if (snapshot.sale && snapshot.sale->numTransactions > 0) {
-		saleAverage = snapshot.sale->totalPrice / snapshot.sale->numTransactions;
-		hasSaleData = true;
-	}
-
-	if (hasPurchaseData && hasSaleData) {
-		return (purchaseAverage & saleAverage) + ((purchaseAverage ^ saleAverage) >> 1);
-	} else if (hasPurchaseData) {
-		return purchaseAverage;
-	} else if (hasSaleData) {
-		return saleAverage;
-	}
-
-	return 0;
 }
 
 std::shared_ptr<Item> searchForItem(const std::shared_ptr<Container> &container, uint16_t itemId, bool hasTier /* = false*/, uint8_t tier /* = 0*/) {
@@ -3548,7 +3508,7 @@ void Game::playerEquipItem(uint32_t playerId, uint16_t itemId, bool hasTier /* =
 	}
 	ReturnValue ret = RETURNVALUE_NOERROR;
 
-	if (slotItem && slotItem->getID() == it.id && (!hasTier || slotItem->getTier() == tier)) {
+	if (slotItem && slotItem->getID() == it.id && (!hasTier || slotItem->getTier() == tier) && !equipItem) {
 		ret = internalCollectManagedItems(player, slotItem, getObjectCategory(slotItem), false);
 	} else if (equipItem) {
 		// Shield slot item
@@ -4299,7 +4259,7 @@ void Game::playerMoveUpContainer(uint32_t playerId, uint8_t cid) {
 			return;
 		}
 
-		if (!g_callbacks().checkCallback(EventCallback_t::playerOnBrowseField, player, tile->getPosition())) {
+		if (!g_callbacks().checkCallback(EventCallback_t::playerOnBrowseField, &EventCallback::playerOnBrowseField, player, tile->getPosition())) {
 			return;
 		}
 
@@ -4388,7 +4348,7 @@ void Game::playerRotateItem(uint32_t playerId, const Position &pos, uint8_t stac
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::playerOnRotateItem, player, item, pos)) {
+	if (!g_callbacks().checkCallback(EventCallback_t::playerOnRotateItem, &EventCallback::playerOnRotateItem, player, item, pos)) {
 		return;
 	}
 
@@ -4871,7 +4831,7 @@ void Game::playerBrowseField(uint32_t playerId, const Position &pos) {
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::playerOnBrowseField, player, tile->getPosition())) {
+	if (!g_callbacks().checkCallback(EventCallback_t::playerOnBrowseField, &EventCallback::playerOnBrowseField, player, tile->getPosition())) {
 		return;
 	}
 
@@ -5173,7 +5133,7 @@ void Game::playerRequestTrade(uint32_t playerId, const Position &pos, uint8_t st
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::playerOnTradeRequest, player, tradePartner, tradeItem)) {
+	if (!g_callbacks().checkCallback(EventCallback_t::playerOnTradeRequest, &EventCallback::playerOnTradeRequest, player, tradePartner, tradeItem)) {
 		return;
 	}
 
@@ -5245,7 +5205,7 @@ void Game::playerAcceptTrade(uint32_t playerId) {
 			return;
 		}
 
-		if (!g_callbacks().checkCallback(EventCallback_t::playerOnTradeAccept, player, tradePartner, tradeItem1, tradeItem2)) {
+		if (!g_callbacks().checkCallback(EventCallback_t::playerOnTradeAccept, &EventCallback::playerOnTradeAccept, player, tradePartner, tradeItem1, tradeItem2)) {
 			internalCloseTrade(player);
 			return;
 		}
@@ -5379,7 +5339,7 @@ void Game::playerLookInTrade(uint32_t playerId, bool lookAtCounterOffer, uint8_t
 	);
 	if (index == 0) {
 		g_events().eventPlayerOnLookInTrade(player, tradePartner, tradeItem, lookDistance);
-		g_callbacks().executeCallback(EventCallback_t::playerOnLookInTrade, player, tradePartner, tradeItem, lookDistance);
+		g_callbacks().executeCallback(EventCallback_t::playerOnLookInTrade, &EventCallback::playerOnLookInTrade, player, tradePartner, tradeItem, lookDistance);
 		return;
 	}
 
@@ -5400,7 +5360,7 @@ void Game::playerLookInTrade(uint32_t playerId, bool lookAtCounterOffer, uint8_t
 
 			if (--index == 0) {
 				g_events().eventPlayerOnLookInTrade(player, tradePartner, item, lookDistance);
-				g_callbacks().executeCallback(EventCallback_t::playerOnLookInTrade, player, tradePartner, item, lookDistance);
+				g_callbacks().executeCallback(EventCallback_t::playerOnLookInTrade, &EventCallback::playerOnLookInTrade, player, tradePartner, item, lookDistance);
 				return;
 			}
 		}
@@ -5577,7 +5537,7 @@ void Game::playerLookInShop(uint32_t playerId, uint16_t itemId, uint8_t count) {
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::playerOnLookInShop, player, &it, count)) {
+	if (!g_callbacks().checkCallback(EventCallback_t::playerOnLookInShop, &EventCallback::playerOnLookInShop, player, &it, count)) {
 		return;
 	}
 
@@ -5619,7 +5579,7 @@ void Game::playerLookAt(uint32_t playerId, uint16_t itemId, const Position &pos,
 
 	// Parse onLook from event player
 	g_events().eventPlayerOnLook(player, pos, thing, stackPos, lookDistance);
-	g_callbacks().executeCallback(EventCallback_t::playerOnLook, player, thing, pos, lookDistance);
+	g_callbacks().executeCallback(EventCallback_t::playerOnLook, &EventCallback::playerOnLook, player, pos, thing, stackPos, lookDistance);
 }
 
 void Game::playerLookInBattleList(uint32_t playerId, uint32_t creatureId) {
@@ -5654,7 +5614,7 @@ void Game::playerLookInBattleList(uint32_t playerId, uint32_t creatureId) {
 	}
 
 	g_events().eventPlayerOnLookInBattleList(player, creature, lookDistance);
-	g_callbacks().executeCallback(EventCallback_t::playerOnLookInBattleList, player, creature, lookDistance);
+	g_callbacks().executeCallback(EventCallback_t::playerOnLookInBattleList, &EventCallback::playerOnLookInBattleList, player, creature, lookDistance);
 }
 
 void Game::playerQuickLoot(uint32_t playerId, const Position &pos, uint16_t itemId, uint8_t stackPos, const std::shared_ptr<Item> &defaultItem, bool lootAllCorpses, bool autoLoot) {
@@ -5849,6 +5809,87 @@ void Game::playerLootAllCorpses(const std::shared_ptr<Player> &player, const Pos
 	}
 
 	browseField = false;
+}
+
+void Game::playerLootNearby(uint32_t playerId) {
+	const auto &player = getPlayerByID(playerId);
+	if (!player) {
+		return;
+	}
+
+	const Position &playerPos = player->getPosition();
+	uint32_t totalCorpses = 0;
+	uint32_t totalCorpsesFound = 0;
+
+	// Iterate all tiles within a 1-tile radius around the player (3x3 area)
+	for (int32_t x = -1; x <= 1; ++x) {
+		for (int32_t y = -1; y <= 1; ++y) {
+			const std::shared_ptr<Tile> &tile = map.getTile(
+				static_cast<uint16_t>(playerPos.x + x),
+				static_cast<uint16_t>(playerPos.y + y),
+				playerPos.z
+			);
+			if (!tile) {
+				continue;
+			}
+
+			const TileItemVector* itemVector = tile->getItemList();
+			if (!itemVector) {
+				continue;
+			}
+
+			for (const auto &tileItem : *itemVector) {
+				if (!tileItem) {
+					continue;
+				}
+
+				const auto &corpse = tileItem->getContainer();
+				if (!corpse || !corpse->isCorpse()
+				    || corpse->hasAttribute(ItemAttribute_t::UNIQUEID)
+				    || corpse->hasAttribute(ItemAttribute_t::ACTIONID)) {
+					continue;
+				}
+
+				if (!corpse->isRewardCorpse()
+				    && corpse->getCorpseOwner() != 0
+				    && !player->canOpenCorpse(corpse->getCorpseOwner())) {
+					continue;
+				}
+
+				// Skip completely empty corpses to avoid spam messages
+				if (corpse->empty()) {
+					++totalCorpsesFound;
+					continue;
+				}
+
+				playerQuickLootCorpse(player, corpse, corpse->getPosition());
+				++totalCorpses;
+				++totalCorpsesFound;
+
+				if (totalCorpses >= 30) {
+					break;
+				}
+			}
+
+			if (totalCorpses >= 30) {
+				break;
+			}
+		}
+
+		if (totalCorpses >= 30) {
+			break;
+		}
+	}
+
+	if (totalCorpsesFound == 0) {
+		player->sendCancelMessage("There are no corpses nearby to loot.");
+	} else if (totalCorpses == 0) {
+		player->sendCancelMessage("All nearby corpses are already empty.");
+	} else if (totalCorpses > 1) {
+		std::stringstream ss;
+		ss << "You looted " << totalCorpses << " corpses.";
+		player->sendTextMessage(MESSAGE_LOOT, ss.str());
+	}
 }
 
 void Game::playerSetManagedContainer(uint32_t playerId, ObjectCategory_t category, const Position &pos, uint16_t itemId, uint8_t stackPos, bool isLootContainer) {
@@ -6222,7 +6263,7 @@ void Game::playerTurn(uint32_t playerId, Direction dir) {
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::playerOnTurn, player, dir)) {
+	if (!g_callbacks().checkCallback(EventCallback_t::playerOnTurn, &EventCallback::playerOnTurn, player, dir)) {
 		return;
 	}
 
@@ -6407,7 +6448,7 @@ void Game::playerShowQuestLog(uint32_t playerId) {
 	}
 
 	g_events().eventPlayerOnRequestQuestLog(player);
-	g_callbacks().executeCallback(EventCallback_t::playerOnRequestQuestLog, player);
+	g_callbacks().executeCallback(EventCallback_t::playerOnRequestQuestLog, &EventCallback::playerOnRequestQuestLog, player);
 }
 
 void Game::playerShowQuestLine(uint32_t playerId, uint16_t questId) {
@@ -6417,7 +6458,7 @@ void Game::playerShowQuestLine(uint32_t playerId, uint16_t questId) {
 	}
 
 	g_events().eventPlayerOnRequestQuestLine(player, questId);
-	g_callbacks().executeCallback(EventCallback_t::playerOnRequestQuestLine, player, questId);
+	g_callbacks().executeCallback(EventCallback_t::playerOnRequestQuestLine, &EventCallback::playerOnRequestQuestLine, player, questId);
 }
 
 void Game::playerSay(uint32_t playerId, uint16_t channelId, SpeakClasses type, const std::string &receiver, const std::string &text) {
@@ -6767,7 +6808,7 @@ void Game::internalCreatureChangeOutfit(const std::shared_ptr<Creature> &creatur
 		return;
 	}
 
-	if (!g_callbacks().checkCallback(EventCallback_t::creatureOnChangeOutfit, creature, outfit)) {
+	if (!g_callbacks().checkCallback(EventCallback_t::creatureOnChangeOutfit, &EventCallback::creatureOnChangeOutfit, creature, outfit)) {
 		return;
 	}
 
@@ -6856,7 +6897,7 @@ void Game::sendDoubleSoundEffect(const Position &pos, SoundEffect_t mainSoundEff
 	}
 }
 
-bool Game::combatBlockHit(CombatDamage &damage, const std::shared_ptr<Creature> &attacker, const std::shared_ptr<Creature> &target, bool checkDefense, bool checkArmor, bool field, bool condition /* = false */) {
+bool Game::combatBlockHit(CombatDamage &damage, const std::shared_ptr<Creature> &attacker, const std::shared_ptr<Creature> &target, bool checkDefense, bool checkArmor, bool field) {
 	if (damage.primary.type == COMBAT_NONE && damage.secondary.type == COMBAT_NONE) {
 		return true;
 	}
@@ -6912,11 +6953,6 @@ bool Game::combatBlockHit(CombatDamage &damage, const std::shared_ptr<Creature> 
 			damage.primary.value *= attacker->getBuff(BUFF_DAMAGEDEALT) / 100.;
 		}
 		damage.primary.value *= target->getBuff(BUFF_DAMAGERECEIVED) / 100.;
-
-		if (!condition) {
-			Combat::applyMantraAbsorb(targetPlayer, damage.primary.type, damage.primary.value);
-			damage.primary.value = std::max<int32_t>(damage.primary.value, 0);
-		}
 
 		primaryBlockType = target->blockHit(attacker, damage.primary.type, damage.primary.value, checkDefense, checkArmor, field);
 
@@ -6987,11 +7023,6 @@ bool Game::combatBlockHit(CombatDamage &damage, const std::shared_ptr<Creature> 
 			damage.secondary.value *= attacker->getBuff(BUFF_DAMAGEDEALT) / 100.;
 		}
 		damage.secondary.value *= target->getBuff(BUFF_DAMAGERECEIVED) / 100.;
-
-		if (!condition) {
-			Combat::applyMantraAbsorb(targetPlayer, damage.secondary.type, damage.secondary.value);
-			damage.secondary.value = std::max<int32_t>(damage.secondary.value, 0);
-		}
 
 		secondaryBlockType = target->blockHit(attacker, damage.secondary.type, damage.secondary.value, false, false, field);
 
@@ -7514,7 +7545,7 @@ bool Game::combatChangeHealth(const std::shared_ptr<Creature> &attacker, const s
 
 		if (!isEvent) {
 			g_events().eventCreatureOnDrainHealth(target, attacker, damage.primary.type, damage.primary.value, damage.secondary.type, damage.secondary.value, message.primary.color, message.secondary.color);
-			g_callbacks().executeCallback(EventCallback_t::creatureOnDrainHealth, target, attacker, std::ref(damage.primary.type), std::ref(damage.primary.value), std::ref(damage.secondary.type), std::ref(damage.secondary.value), std::ref(message.primary.color), std::ref(message.secondary.color));
+			g_callbacks().executeCallback(EventCallback_t::creatureOnDrainHealth, &EventCallback::creatureOnDrainHealth, target, attacker, std::ref(damage.primary.type), std::ref(damage.primary.value), std::ref(damage.secondary.type), std::ref(damage.secondary.value), std::ref(message.primary.color), std::ref(message.secondary.color));
 		}
 		if (damage.origin != ORIGIN_NONE && attacker && damage.primary.type != COMBAT_HEALING) {
 			damage.primary.value *= attacker->getBuff(BUFF_DAMAGEDEALT) / 100.;
@@ -8363,6 +8394,16 @@ void Game::addDistanceEffect(const CreatureVector &spectators, const Position &f
 	}
 }
 
+void Game::checkImbuements() const {
+	for (const auto &[mapPlayerId, mapPlayer] : getPlayers()) {
+		if (!mapPlayer) {
+			continue;
+		}
+
+		mapPlayer->updateInventoryImbuement();
+	}
+}
+
 void Game::checkLight() {
 	lightHour += lightHourDelta;
 
@@ -8933,7 +8974,7 @@ std::string Game::generateVocationConditionHighscore(uint32_t vocation) {
 	return queryPart.str();
 }
 
-void Game::processHighscoreResults(const DBResult_ptr &result, uint32_t playerID, uint8_t category, uint32_t vocationCID, uint8_t entriesPerPage) {
+void Game::processHighscoreResults(const DBResult_ptr &result, uint32_t playerID, uint8_t category, uint32_t vocation, uint8_t entriesPerPage) {
 	const auto &player = g_game().getPlayerByID(playerID);
 	if (!player) {
 		return;
@@ -8951,9 +8992,8 @@ void Game::processHighscoreResults(const DBResult_ptr &result, uint32_t playerID
 	pages += entriesPerPage - 1;
 	pages /= entriesPerPage;
 
-	uint32_t vocationId = getVocationIdFromClientId(vocationCID);
 	std::ostringstream cacheKeyStream;
-	cacheKeyStream << "Highscore_" << static_cast<int>(category) << "_" << static_cast<int>(vocationId) << "_" << static_cast<int>(entriesPerPage) << "_" << page;
+	cacheKeyStream << "Highscore_" << static_cast<int>(category) << "_" << static_cast<int>(vocation) << "_" << static_cast<int>(entriesPerPage) << "_" << page;
 	std::string cacheKey = cacheKeyStream.str();
 
 	auto it = highscoreCache.find(cacheKey);
@@ -8964,7 +9004,7 @@ void Game::processHighscoreResults(const DBResult_ptr &result, uint32_t playerID
 		auto durationSinceEpoch = cachedTime.time_since_epoch();
 		auto secondsSinceEpoch = std::chrono::duration_cast<std::chrono::seconds>(durationSinceEpoch).count();
 		auto updateTimer = static_cast<uint32_t>(secondsSinceEpoch);
-		player->sendHighscores(cacheEntry.characters, category, vocationCID, cacheEntry.page, static_cast<uint16_t>(cacheEntry.entriesPerPage), updateTimer);
+		player->sendHighscores(cacheEntry.characters, category, vocation, cacheEntry.page, static_cast<uint16_t>(cacheEntry.entriesPerPage), updateTimer);
 	} else {
 		std::vector<HighscoreCharacter> characters;
 		characters.reserve(result->countResults());
@@ -8977,7 +9017,7 @@ void Game::processHighscoreResults(const DBResult_ptr &result, uint32_t playerID
 			} while (result->next());
 		}
 
-		player->sendHighscores(characters, category, vocationCID, page, static_cast<uint16_t>(pages), getTimeNow());
+		player->sendHighscores(characters, category, vocation, page, static_cast<uint16_t>(pages), getTimeNow());
 		highscoreCache[cacheKey] = { characters, page, pages, now };
 	}
 }
@@ -9031,12 +9071,10 @@ void Game::playerHighscores(const std::shared_ptr<Player> &player, HighscoreType
 	std::string categoryName = getSkillNameById(category);
 
 	std::string query;
-
-	uint32_t vocationId = getVocationIdFromClientId(vocation);
 	if (type == HIGHSCORE_GETENTRIES) {
-		query = generateHighscoreOrGetCachedQueryForEntries(categoryName, page, entriesPerPage, vocationId);
+		query = generateHighscoreOrGetCachedQueryForEntries(categoryName, page, entriesPerPage, vocation);
 	} else if (type == HIGHSCORE_OURRANK) {
-		query = generateHighscoreOrGetCachedQueryForOurRank(categoryName, entriesPerPage, player->getGUID(), vocationId);
+		query = generateHighscoreOrGetCachedQueryForOurRank(categoryName, entriesPerPage, player->getGUID(), vocation);
 	}
 
 	uint32_t playerID = player->getID();
@@ -9081,7 +9119,7 @@ void Game::playerReportRuleViolationReport(uint32_t playerId, const std::string 
 	}
 
 	g_events().eventPlayerOnReportRuleViolation(player, targetName, reportType, reportReason, comment, translation);
-	g_callbacks().executeCallback(EventCallback_t::playerOnReportRuleViolation, player, targetName, reportType, reportReason, comment, translation);
+	g_callbacks().executeCallback(EventCallback_t::playerOnReportRuleViolation, &EventCallback::playerOnReportRuleViolation, player, targetName, reportType, reportReason, comment, translation);
 }
 
 void Game::playerReportBug(uint32_t playerId, const std::string &message, const Position &position, uint8_t category) {
@@ -9091,7 +9129,7 @@ void Game::playerReportBug(uint32_t playerId, const std::string &message, const 
 	}
 
 	g_events().eventPlayerOnReportBug(player, message, position, category);
-	g_callbacks().executeCallback(EventCallback_t::playerOnReportBug, player, message, position, category);
+	g_callbacks().executeCallback(EventCallback_t::playerOnReportBug, &EventCallback::playerOnReportBug, player, message, position, category);
 }
 
 void Game::playerDebugAssert(uint32_t playerId, const std::string &assertLine, const std::string &date, const std::string &description, const std::string &comment) {
@@ -9821,7 +9859,7 @@ void Game::playerAnswerModalWindow(uint32_t playerId, uint32_t modalWindowId, ui
 	// offline training, hardcoded
 	if (modalWindowId == std::numeric_limits<uint32_t>::max()) {
 		if (button == 1) {
-			if (choice == SKILL_FIST || choice == SKILL_SWORD || choice == SKILL_AXE || choice == SKILL_CLUB || choice == SKILL_DISTANCE || choice == SKILL_MAGLEVEL) {
+			if (choice == SKILL_SWORD || choice == SKILL_AXE || choice == SKILL_CLUB || choice == SKILL_DISTANCE || choice == SKILL_MAGLEVEL) {
 				auto bedItem = player->getBedItem();
 				if (bedItem && bedItem->sleep(player)) {
 					player->setOfflineTrainingSkill(static_cast<int8_t>(choice));
@@ -9856,11 +9894,6 @@ void Game::playerForgeFuseItems(uint32_t playerId, ForgeAction_t actionType, uin
 
 	uint8_t coreCount = (usedCore ? 1 : 0) + (reduceTierLoss ? 1 : 0);
 	auto baseSuccess = static_cast<uint8_t>(g_configManager().getNumber(FORGE_BASE_SUCCESS_RATE));
-	if (const auto scopedForgeChance = g_kv().scoped("eventscheduler")->get("forge-chance")) {
-		auto forgeChance = static_cast<int>(scopedForgeChance->getNumber());
-		int adjustedSuccess = baseSuccess + forgeChance - 100;
-		baseSuccess = static_cast<uint8_t>(std::clamp(adjustedSuccess, 0, 100));
-	}
 	auto coreSuccess = usedCore ? g_configManager().getNumber(FORGE_BONUS_SUCCESS_RATE) : 0;
 	auto finalRate = baseSuccess + coreSuccess;
 	auto roll = static_cast<uint8_t>(uniform_random(1, 100)) <= finalRate;
@@ -10730,7 +10763,7 @@ bool Game::removeInfluencedMonster(uint32_t id, bool create /* = false*/) {
 		influencedMonsters.erase(find);
 
 		if (create) {
-			[[maybe_unused]] auto eventId = g_dispatcher().scheduleEvent(
+			g_dispatcher().scheduleEvent(
 				10 * 1000, [this] { makeInfluencedMonster(); }, "Game::makeInfluencedMonster"
 			);
 		}
@@ -10748,7 +10781,7 @@ bool Game::removeFiendishMonster(uint32_t id, bool create /* = true*/) {
 		checkForgeEventId(id);
 
 		if (create) {
-			[[maybe_unused]] auto eventId = g_dispatcher().scheduleEvent(
+			g_dispatcher().scheduleEvent(
 				270 * 1000, [this] { makeFiendishMonster(0, false); }, "Game::makeFiendishMonster"
 			);
 		}
@@ -10907,7 +10940,7 @@ void Game::playerCheckActivity(const std::string &playerName, int interval) {
 		}
 	}
 
-	[[maybe_unused]] auto eventId = g_dispatcher().scheduleEvent(
+	g_dispatcher().scheduleEvent(
 		1000, [this, playerName, interval] { playerCheckActivity(playerName, interval); }, "Game::playerCheckActivity"
 	);
 }
@@ -11048,14 +11081,14 @@ ReturnValue Game::beforeCreatureZoneChange(const std::shared_ptr<Creature> &crea
 	}
 
 	for (const auto &zone : zonesLeaving) {
-		bool allowed = g_callbacks().checkCallback(EventCallback_t::zoneBeforeCreatureLeave, zone, creature);
+		bool allowed = g_callbacks().checkCallback(EventCallback_t::zoneBeforeCreatureLeave, &EventCallback::zoneBeforeCreatureLeave, zone, creature);
 		if (!force && !allowed) {
 			return RETURNVALUE_NOTPOSSIBLE;
 		}
 	}
 
 	for (const auto &zone : zonesEntering) {
-		bool allowed = g_callbacks().checkCallback(EventCallback_t::zoneBeforeCreatureEnter, zone, creature);
+		bool allowed = g_callbacks().checkCallback(EventCallback_t::zoneBeforeCreatureEnter, &EventCallback::zoneBeforeCreatureEnter, zone, creature);
 		if (!force && !allowed) {
 			return RETURNVALUE_NOTPOSSIBLE;
 		}
@@ -11082,10 +11115,10 @@ void Game::afterCreatureZoneChange(const std::shared_ptr<Creature> &creatures, c
 	}
 
 	for (const auto &zone : zonesLeaving) {
-		g_callbacks().executeCallback(EventCallback_t::zoneAfterCreatureLeave, zone, creature);
+		g_callbacks().executeCallback(EventCallback_t::zoneAfterCreatureLeave, &EventCallback::zoneAfterCreatureLeave, zone, creature);
 	}
 	for (const auto &zone : zonesEntering) {
-		g_callbacks().executeCallback(EventCallback_t::zoneAfterCreatureEnter, zone, creature);
+		g_callbacks().executeCallback(EventCallback_t::zoneAfterCreatureEnter, &EventCallback::zoneAfterCreatureEnter, zone, creature);
 	}
 }
 
